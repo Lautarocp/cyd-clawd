@@ -1,0 +1,13 @@
+services:
+  cyd-clawd:
+    build: ./daemon
+    container_name: cyd-clawd
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    volumes:
+      - ${HOME}/.claude/.credentials.json:/root/.claude/.credentials.json:ro
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TZ=Europe/Madrid

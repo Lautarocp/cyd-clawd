@@ -1,0 +1,10 @@
+# PlatformIO build artifacts
+firmware/.pio/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Credenciales — nunca al repo
+*.credentials.json
+.env
