@@ -17,6 +17,9 @@
 #define TOUCH_MISO 39
 #define TOUCH_MOSI 32
 
+// Sys screen se refresca cada 5s mientras está activa
+#define POLL_SYS_INTERVAL_MS 5000
+
 static TFT_eSPI    tft;
 static SPIClass    touchSPI(HSPI);
 static XPT2046_Touchscreen ts(TOUCH_CS, TOUCH_IRQ);
@@ -27,8 +30,11 @@ static uint16_t buf1[320 * BUF_LINES];
 static uint16_t buf2[320 * BUF_LINES];
 
 // ── Estado de aplicación ─────────────────────────────────────────────────
-static UsageData usage = {};
-static unsigned long last_poll_ms = 0;
+static UsageData usage    = {};
+static SysData   sys_data = {};
+static unsigned long last_poll_ms     = 0;
+static unsigned long last_sys_poll_ms = 0;
+static int last_screen = 0;
 
 // ── LVGL callbacks ───────────────────────────────────────────────────────
 
@@ -55,7 +61,7 @@ static void touch_read(lv_indev_t* indev, lv_indev_data_t* data) {
     }
 }
 
-// ── Parseo JSON ──────────────────────────────────────────────────────────
+// ── Parseo JSON — Usage ──────────────────────────────────────────────────
 
 static bool parse_json(const char* json, UsageData* out) {
     JsonDocument doc;
@@ -73,6 +79,24 @@ static bool parse_json(const char* json, UsageData* out) {
     out->clock_fmt          = doc["tf"] | 24;
     out->ok                 = doc["ok"] | false;
     out->valid              = true;
+    return true;
+}
+
+// ── Parseo JSON — Sys ────────────────────────────────────────────────────
+
+static bool parse_sys_json(const char* json, SysData* out) {
+    JsonDocument doc;
+    if (deserializeJson(doc, json) != DeserializationError::Ok) return false;
+
+    out->cpu_pct       = doc["cpu"] | 0;
+    out->ram_used_mb   = doc["rmu"] | 0;
+    out->ram_total_mb  = doc["rmt"] | 0;
+    out->disk_used_gb  = doc["dku"] | 0;
+    out->disk_total_gb = doc["dkt"] | 0;
+    out->clock_epoch   = doc["t"]   | 0L;
+    out->clock_fmt     = doc["tf"]  | 24;
+    out->ok            = doc["ok"]  | false;
+    out->valid         = true;
     return true;
 }
 
@@ -94,15 +118,46 @@ static void poll_daemon(void) {
         String body = http.getString();
         if (parse_json(body.c_str(), &usage)) {
             ui_update(&usage);
-            Serial.printf("[OK] s=%.0f%% w=%.0f%%\n",
+            Serial.printf("[USAGE] s=%.0f%% w=%.0f%%\n",
                           usage.session_pct, usage.weekly_pct);
         } else {
-            Serial.println("[ERR] JSON parse failed");
+            Serial.println("[USAGE] JSON parse failed");
             ui_show_error("Error JSON");
         }
     } else {
-        Serial.printf("[ERR] HTTP %d\n", code);
+        Serial.printf("[USAGE] HTTP %d\n", code);
         ui_show_error("Error daemon");
+    }
+    http.end();
+}
+
+static void poll_sys(void) {
+    if (WiFi.status() != WL_CONNECTED) {
+        ui_sys_show_error("WiFi desconectado");
+        return;
+    }
+
+    HTTPClient http;
+    String url = "http://" + String(DAEMON_HOST) + ":" + String(DAEMON_PORT) + "/sys";
+    http.begin(url);
+    http.setTimeout(8000);
+
+    int code = http.GET();
+    if (code == 200) {
+        String body = http.getString();
+        if (parse_sys_json(body.c_str(), &sys_data)) {
+            ui_sys_update(&sys_data);
+            Serial.printf("[SYS] cpu=%d%% ram=%d/%d disk=%d/%d\n",
+                          sys_data.cpu_pct,
+                          sys_data.ram_used_mb, sys_data.ram_total_mb,
+                          sys_data.disk_used_gb, sys_data.disk_total_gb);
+        } else {
+            Serial.println("[SYS] JSON parse failed");
+            ui_sys_show_error("Error JSON");
+        }
+    } else {
+        Serial.printf("[SYS] HTTP %d\n", code);
+        ui_sys_show_error("Error daemon");
     }
     http.end();
 }
@@ -112,19 +167,16 @@ static void poll_daemon(void) {
 void setup() {
     Serial.begin(115200);
 
-    // Pantalla
     tft.begin();
     tft.setRotation(TFT_ROTATION);
     tft.fillScreen(TFT_BLACK);
     pinMode(TFT_BL, OUTPUT);
     digitalWrite(TFT_BL, HIGH);
 
-    // Touch (HSPI bus, pines no estándar)
     touchSPI.begin(TOUCH_CLK, TOUCH_MISO, TOUCH_MOSI);
     ts.begin(touchSPI);
     ts.setRotation(TFT_ROTATION);
 
-    // LVGL
     lv_init();
     lv_tick_set_cb(lv_tick_cb);
 
@@ -139,10 +191,10 @@ void setup() {
     lv_indev_set_read_cb(indev, touch_read);
 
     ui_init();
+    ui_sys_init();
     ui_show_connecting();
     lv_timer_handler();
 
-    // WiFi
     Serial.printf("Conectando a %s...\n", WIFI_SSID);
     WiFi.mode(WIFI_STA);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -167,9 +219,25 @@ void setup() {
 void loop() {
     lv_timer_handler();
 
+    int scr = ui_current_screen();
+
+    // Al cambiar a la pantalla sys, hacer poll inmediato
+    if (scr != last_screen) {
+        last_screen = scr;
+        if (scr == 1) {
+            poll_sys();
+            last_sys_poll_ms = millis();
+        }
+    }
+
     if (millis() - last_poll_ms >= POLL_INTERVAL_MS) {
         last_poll_ms = millis();
         poll_daemon();
+    }
+
+    if (scr == 1 && millis() - last_sys_poll_ms >= POLL_SYS_INTERVAL_MS) {
+        last_sys_poll_ms = millis();
+        poll_sys();
     }
 
     delay(5);

@@ -25,6 +25,11 @@ try:
 except ImportError:
     sys.exit("Falta httpx. Instalá con: pip install httpx")
 
+try:
+    import psutil
+except ImportError:
+    sys.exit("Falta psutil. Instalá con: pip install psutil")
+
 # ── Config ────────────────────────────────────────────────────────────────
 PORT          = 8765
 POLL_INTERVAL = 60   # segundos entre consultas a la API
@@ -273,17 +278,42 @@ def run_async_loop() -> None:
     asyncio.run(polling_loop())
 
 
+# ── Stats del sistema ─────────────────────────────────────────────────────
+
+def _get_sys_stats() -> dict:
+    try:
+        cpu  = psutil.cpu_percent(interval=0.3)
+        ram  = psutil.virtual_memory()
+        disk = psutil.disk_usage("/")
+        now  = time.time()
+        return {
+            "cpu": int(round(cpu)),
+            "rmu": ram.used   // (1024 * 1024),
+            "rmt": ram.total  // (1024 * 1024),
+            "dku": int(disk.used  / (1024 ** 3)),
+            "dkt": int(disk.total / (1024 ** 3)),
+            "ok":  True,
+            "t":   int(now) + time.localtime().tm_gmtoff,
+            "tf":  24,
+        }
+    except Exception as e:
+        log(f"Error leyendo stats del sistema: {e}")
+        return {"ok": False}
+
+
 # ── HTTP Handler ──────────────────────────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
-        if self.path != "/usage":
+        if self.path == "/usage":
+            with _lock:
+                body = json.dumps(_cached_data, separators=(",", ":")).encode()
+        elif self.path == "/sys":
+            body = json.dumps(_get_sys_stats(), separators=(",", ":")).encode()
+        else:
             self.send_response(404)
             self.end_headers()
             return
-
-        with _lock:
-            body = json.dumps(_cached_data, separators=(",", ":")).encode()
 
         self.send_response(200)
         self.send_header("Content-Type", "application/json")

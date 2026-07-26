@@ -2,14 +2,26 @@
 #include <Arduino.h>
 
 struct UsageData {
-    float session_pct;       // 0–100 (ventana 5h)
+    float session_pct;
     int   session_reset_mins;
-    float weekly_pct;        // 0–100 (ventana 7d)
+    float weekly_pct;
     int   weekly_reset_mins;
-    char  status[16];        // "allowed", "limited", …
+    char  status[16];
     bool  enterprise;
-    long  clock_epoch;       // epoch local del daemon (0 = no disponible)
-    int   clock_fmt;         // 12 o 24
+    long  clock_epoch;
+    int   clock_fmt;
     bool  ok;
     bool  valid;
+};
+
+struct SysData {
+    int  cpu_pct;
+    int  ram_used_mb;
+    int  ram_total_mb;
+    int  disk_used_gb;
+    int  disk_total_gb;
+    long clock_epoch;
+    int  clock_fmt;
+    bool ok;
+    bool valid;
 };

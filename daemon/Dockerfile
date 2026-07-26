@@ -2,7 +2,7 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir httpx
+RUN pip install --no-cache-dir httpx psutil
 
 COPY server.py .
 
