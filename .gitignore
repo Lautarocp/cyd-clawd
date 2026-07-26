@@ -8,3 +8,6 @@ __pycache__/
 # Credenciales — nunca al repo
 *.credentials.json
 .env
+
+# Config con datos personales (WiFi, IP) — copiar de config.h.example
+firmware/src/config.h

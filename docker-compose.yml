@@ -6,8 +6,11 @@ services:
     ports:
       - "8765:8765"
     volumes:
-      - ${HOME}/.claude/.credentials.json:/root/.claude/.credentials.json:ro
+      - ${HOME}/.claude:/root/.claude:ro
       - /etc/localtime:/etc/localtime:ro
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     environment:
       - PYTHONUNBUFFERED=1
       - TZ=Europe/Madrid

@@ -1,0 +1,22 @@
+#pragma once
+
+// ── WiFi ──────────────────────────────────────────────────────────────────
+#define WIFI_SSID     "YourNetworkName"
+#define WIFI_PASSWORD "YourPassword"
+
+// ── Daemon HTTP ───────────────────────────────────────────────────────────
+// IP of the machine running the Docker daemon on your local network
+#define DAEMON_HOST   "192.168.1.100"
+#define DAEMON_PORT   8765
+#define POLL_INTERVAL_MS 60000   // poll every 60 seconds
+
+// ── Display ───────────────────────────────────────────────────────────────
+// Rotation: 1 = landscape (320x240) with USB port on the right
+#define TFT_ROTATION  1
+
+// ── Touch calibration ─────────────────────────────────────────────────────
+// Adjust these if touch position is off (run a calibration sketch to get values)
+#define TOUCH_X_MIN  200
+#define TOUCH_X_MAX  3700
+#define TOUCH_Y_MIN  240
+#define TOUCH_Y_MAX  3800

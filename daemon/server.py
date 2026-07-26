@@ -30,6 +30,11 @@ PORT          = 8765
 POLL_INTERVAL = 60   # segundos entre consultas a la API
 CRED_FILE     = Path.home() / ".claude" / ".credentials.json"
 
+OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+# Refrescar el token si vence en menos de este tiempo (segundos)
+TOKEN_REFRESH_MARGIN = 300
+
 API_URL = "https://api.anthropic.com/v1/messages"
 API_HEADERS = {
     "anthropic-version": "2023-06-01",
@@ -52,42 +57,117 @@ def log(msg: str) -> None:
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-# ── Lectura del token OAuth ───────────────────────────────────────────────
+# ── Lectura y refresco del token OAuth ───────────────────────────────────
 
-def read_token() -> str | None:
+def _read_creds() -> dict | None:
     if not CRED_FILE.exists():
         log(f"No se encontró {CRED_FILE}")
         return None
     try:
-        blob = CRED_FILE.read_text().strip()
-    except OSError as e:
+        data = json.loads(CRED_FILE.read_text().strip())
+    except (OSError, json.JSONDecodeError) as e:
         log(f"Error leyendo credenciales: {e}")
+        return None
+    # Estructura conocida: {"claudeAiOauth": {...}}
+    if isinstance(data, dict):
+        for v in [data] + list(data.values()):
+            if isinstance(v, dict) and "accessToken" in v:
+                return v
+    return None
+
+
+def _save_creds(creds: dict) -> None:
+    try:
+        data = json.loads(CRED_FILE.read_text().strip())
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    # Actualizar la clave que contiene el accessToken
+    updated = False
+    if isinstance(data, dict):
+        if "accessToken" in data:
+            data.update(creds)
+            updated = True
+        else:
+            for k, v in data.items():
+                if isinstance(v, dict) and "accessToken" in v:
+                    v.update(creds)
+                    updated = True
+                    break
+    if not updated:
+        data = creds
+    try:
+        CRED_FILE.write_text(json.dumps(data))
+    except OSError as e:
+        log(f"No se pudo guardar credenciales: {e}")
+
+
+async def _refresh_token(refresh_token: str) -> str | None:
+    body = {
+        "grant_type":    "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id":     OAUTH_CLIENT_ID,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                OAUTH_TOKEN_URL,
+                json=body,
+                headers={"Content-Type": "application/json"},
+            )
+    except httpx.HTTPError as e:
+        log(f"Error de red al refrescar token: {e}")
+        return None
+
+    if resp.status_code != 200:
+        log(f"Refresh token falló HTTP {resp.status_code}")
         return None
 
     try:
-        data = json.loads(blob)
-    except json.JSONDecodeError:
-        data = None
+        result = resp.json()
+    except Exception:
+        log("Respuesta de refresh inválida")
+        return None
 
-    if isinstance(data, dict):
-        if isinstance(data.get("accessToken"), str):
-            return data["accessToken"]
-        for v in data.values():
-            if isinstance(v, dict) and isinstance(v.get("accessToken"), str):
-                return v["accessToken"]
+    new_access  = result.get("access_token")
+    new_refresh = result.get("refresh_token")
+    expires_in  = result.get("expires_in", 3600)
 
-    m = re.search(r'"accessToken"\s*:\s*"([^"]+)"', blob)
-    if m:
-        return m.group(1)
+    if not new_access:
+        log("Refresh no devolvió access_token")
+        return None
 
-    log("No se pudo extraer accessToken del archivo de credenciales")
-    return None
+    updated = {"accessToken": new_access, "expiresAt": int(time.time() * 1000) + expires_in * 1000}
+    if new_refresh:
+        updated["refreshToken"] = new_refresh
+    _save_creds(updated)
+    log("Token refrescado correctamente")
+    return new_access
+
+
+async def get_valid_token() -> str | None:
+    creds = _read_creds()
+    if not creds:
+        return None
+
+    access_token  = creds.get("accessToken")
+    refresh_token = creds.get("refreshToken")
+    expires_at_ms = creds.get("expiresAt", 0)  # milisegundos
+
+    # Refrescar proactivamente si el token vence pronto
+    expires_in_s = (expires_at_ms / 1000) - time.time()
+    if expires_in_s < TOKEN_REFRESH_MARGIN and refresh_token:
+        log(f"Token vence en {int(expires_in_s)}s, refrescando...")
+        new_token = await _refresh_token(refresh_token)
+        if new_token:
+            return new_token
+
+    return access_token
 
 
 # ── Consulta a la API ─────────────────────────────────────────────────────
 
 async def poll_api() -> dict | None:
-    token = read_token()
+    token = await get_valid_token()
     if not token:
         return None
 
@@ -100,6 +180,22 @@ async def poll_api() -> dict | None:
     except httpx.HTTPError as e:
         log(f"Error de red: {e}")
         return None
+
+    # Si el token expiró en el medio, intentar refrescar y reintentar una vez
+    if resp.status_code == 401:
+        log("HTTP 401 — intentando refrescar token...")
+        creds = _read_creds()
+        refresh_token = creds.get("refreshToken") if creds else None
+        if refresh_token:
+            new_token = await _refresh_token(refresh_token)
+            if new_token:
+                headers["Authorization"] = f"Bearer {new_token}"
+                try:
+                    async with httpx.AsyncClient(timeout=20.0) as client:
+                        resp = await client.post(API_URL, headers=headers, json=API_BODY)
+                except httpx.HTTPError as e:
+                    log(f"Error de red en reintento: {e}")
+                    return None
 
     if resp.status_code >= 400:
         log(f"API devolvió HTTP {resp.status_code}")
@@ -167,6 +263,8 @@ async def polling_loop() -> None:
         else:
             with _lock:
                 _cached_data["ok"] = False
+                _cached_data["t"]  = int(time.time()) + time.localtime().tm_gmtoff
+                _cached_data["tf"] = 24
             log("Sin datos este ciclo")
         await asyncio.sleep(POLL_INTERVAL)
 
