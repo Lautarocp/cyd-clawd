@@ -4,8 +4,6 @@ Claude Code usage dashboard for the ESP32-2432S028 (Cheap Yellow Display).
 
 Shows your Claude Code rate limit consumption and host system stats in real time on a 320×240 TFT touchscreen. Tap anywhere to switch between screens.
 
-![dashboard showing session and weekly usage bars]()
-
 ## Screens
 
 ### Screen 1 — Claude Code Usage
